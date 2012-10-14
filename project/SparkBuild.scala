@@ -5,7 +5,7 @@ import sbtassembly.Plugin._
 import AssemblyKeys._
 import twirl.sbt.TwirlPlugin._
 // For Sonatype publishing
-import com.jsuereth.pgp.sbtplugin.PgpKeys._
+//import com.jsuereth.pgp.sbtplugin.PgpKeys._
 
 object SparkBuild extends Build {
   // Hadoop version to build against. For example, "0.20.2", "0.20.205.0", or
@@ -42,7 +42,7 @@ object SparkBuild extends Build {
 
     publishMavenStyle := true,
 
-    useGpg in Global := true,
+    //useGpg in Global := true,
 
     pomExtra := (
       <url>http://spark-project.org/</url>
