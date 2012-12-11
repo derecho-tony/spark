@@ -5,4 +5,9 @@ if [ "$MESOS_HOME" != "" ]; then
 fi
 export SPARK_HOME=$(cd "$(dirname $0)/.."; pwd)
 export SPARK_TESTING=1  # To put test classes on classpath
+
+if [ -e $SPARK_HOME/conf/spark-env.sh ] ; then
+  . $SPARK_HOME/conf/spark-env.sh
+fi
+
 java -Xmx1200M -XX:MaxPermSize=200m $EXTRA_ARGS -jar $SPARK_HOME/sbt/sbt-launch-*.jar "$@"
