@@ -12,7 +12,7 @@ import it.unimi.dsi.fastutil.io.FastBufferedOutputStream
 
 import spark.Utils
 import spark.executor.ExecutorExitCode
-import spark.serializer.Serializer
+import spark.serializer.{Serializer, SerializationStream}
 
 
 /**
@@ -25,28 +25,50 @@ private class DiskStore(blockManager: BlockManager, rootDirs: String)
     extends BlockObjectWriter(blockId) {
 
     private val f: File = createFile(blockId /*, allowAppendExisting */)
-    private val bs: OutputStream = blockManager.wrapForCompression(blockId,
-      new FastBufferedOutputStream(new FileOutputStream(f)))
-    private val objOut = serializer.newInstance().serializeStream(bs)
 
-    private var _size: Long = -1L
+    private var repositionableStream: FastBufferedOutputStream = null
+    private var bs: OutputStream = null
+    private var objOut: SerializationStream = null
+    private var validLength = 0L
 
-    override def write(value: Any) {
-      objOut.writeObject(value)
+    override def open() {
+      repositionableStream = new FastBufferedOutputStream(new FileOutputStream(f))
+      repositionableStream.position(validLength)
+      bs = blockManager.wrapForCompression(blockId, repositionableStream)
+      objOut = serializer.newInstance().serializeStream(bs)
     }
 
     override def close() {
       objOut.close()
       bs.close()
       super.close()
+      objOut = null
+      bs = null
+      repositionableStream = null
     }
 
-    override def size(): Long = {
-      if (_size < 0) {
-        _size = f.length()
-      }
-      _size
+    override def isOpen: Boolean = objOut != null
+
+    // Flush the partial writes, and set valid length to be the length of the entire file.
+    // Return the number of bytes written for this commit.
+    override def commit(): Long = {
+      bs.flush()
+      val prevLength = validLength
+      validLength = repositionableStream.position()
+      validLength - prevLength
     }
+
+    override def revertPartialWrites() {
+      // Flush the current content, and then reposition to the previous valid position.
+      bs.flush()
+      repositionableStream.position(validLength)
+    }
+
+    override def write(value: Any) {
+      objOut.writeObject(value)
+    }
+
+    override def size(): Long = validLength
   }
 
   val MAX_DIR_CREATION_ATTEMPTS: Int = 10

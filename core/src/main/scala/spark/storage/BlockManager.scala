@@ -71,6 +71,8 @@ class BlockManager(
     }
   }
 
+  val shuffleBlockManager = new ShuffleBlockManager(this)
+
   private val blockInfo = new TimeStampedHashMap[String, BlockInfo]
 
   private[storage] val memoryStore: BlockStore = new MemoryStore(this, maxMemory)
@@ -369,7 +371,7 @@ class BlockManager(
 
     // As an optimization for map output fetches, if the block is for a shuffle, return it
     // without acquiring a lock; the disk store never deletes (recent) items so this should work
-    if (blockId.startsWith("shuffle_")) {
+    if (ShuffleBlockManager.isShuffle(blockId)) {
       return diskStore.getBytes(blockId) match {
         case Some(bytes) =>
           Some(bytes)
@@ -817,7 +819,7 @@ class BlockManager(
   }
 
   def shouldCompress(blockId: String): Boolean = {
-    if (blockId.startsWith("shuffle_")) {
+    if (ShuffleBlockManager.isShuffle(blockId)) {
       compressShuffle
     } else if (blockId.startsWith("broadcast_")) {
       compressBroadcast
@@ -832,7 +834,11 @@ class BlockManager(
    * Wrap an output stream for compression if block compression is enabled for its block type
    */
   def wrapForCompression(blockId: String, s: OutputStream): OutputStream = {
-    if (shouldCompress(blockId)) new LZFOutputStream(s) else s
+    if (shouldCompress(blockId)) {
+      (new LZFOutputStream(s)).setFinishBlockOnFlush(true)
+    } else {
+      s
+    }
   }
 
   /**

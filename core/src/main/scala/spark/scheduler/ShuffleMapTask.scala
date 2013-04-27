@@ -119,35 +119,33 @@ private[spark] class ShuffleMapTask(
   }
 
   override def run(attemptId: Long): MapStatus = {
-    val numOutputSplits = dep.partitioner.numPartitions
+    val numBuckets = dep.partitioner.numPartitions
 
     val taskContext = new TaskContext(stageId, partition, attemptId)
     metrics = Some(taskContext.taskMetrics)
+
+    val blockManager = SparkEnv.get.blockManager
+    var shuffle: ShuffleBlockManager#Shuffle = null
+    var buckets: ShuffleWriterGroup = null
+
     try {
       // Obtain all the block writers for shuffle blocks.
-      val blockManager = SparkEnv.get.blockManager
-      val buckets = Array.tabulate[BlockObjectWriter](numOutputSplits) { bucketId =>
-        val blockId = "shuffle_" + dep.shuffleId + "_" + partition + "_" + bucketId
-        blockManager.getDiskBlockWriter(blockId, Serializer.get(dep.serializerClass))
-      }
+      val ser = Serializer.get(dep.serializerClass)
+      shuffle = blockManager.shuffleBlockManager.forShuffle(dep.shuffleId, numBuckets, ser)
+      buckets = shuffle.acquireWriters()
 
       // Write the map output to its associated buckets.
       for (elem <- rdd.iterator(split, taskContext)) {
         val pair = elem.asInstanceOf[(Any, Any)]
         val bucketId = dep.partitioner.getPartition(pair._1)
-        buckets(bucketId).write(pair)
+        buckets.writers(bucketId).write(pair)
       }
 
-      // Close the bucket writers and get the sizes of each block.
-      val compressedSizes = new Array[Byte](numOutputSplits)
-      var i = 0
+      // Commit the writes. Get the size of each bucket block (total block size).
       var totalBytes = 0L
-      while (i < numOutputSplits) {
-        buckets(i).close()
-        val size = buckets(i).size()
-        totalBytes += size
-        compressedSizes(i) = MapOutputTracker.compressSize(size)
-        i += 1
+      val compressedSizes: Array[Byte] = buckets.writers.map { writer: BlockObjectWriter =>
+        totalBytes += writer.commit()
+        MapOutputTracker.compressSize(writer.size())
       }
 
       // Update shuffle metrics.
@@ -155,8 +153,20 @@ private[spark] class ShuffleMapTask(
       shuffleMetrics.shuffleBytesWritten = totalBytes
       metrics.get.shuffleWriteMetrics = Some(shuffleMetrics)
 
-      return new MapStatus(blockManager.blockManagerId, compressedSizes)
+      // This will report the total size for each block back to the driver.
+      new MapStatus(blockManager.blockManagerId, buckets.id, compressedSizes)
+    } catch { case e: Exception =>
+      // If there is an exception from running the task, revert the partial writes
+      // and throw the exception upstream to Spark.
+      if (buckets != null) {
+        buckets.writers.foreach(_.revertPartialWrites())
+      }
+      throw e
     } finally {
+      // Release the writers back so other threads can reuse them.
+      if (shuffle != null && buckets != null) {
+        shuffle.releaseWriters(buckets)
+      }
       // Execute the callbacks on task completion.
       taskContext.executeOnCompleteCallbacks()
     }
