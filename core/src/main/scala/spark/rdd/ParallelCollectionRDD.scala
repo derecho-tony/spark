@@ -17,12 +17,12 @@
 
 package spark.rdd
 
+import java.io._
+
 import scala.collection.immutable.NumericRange
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.{ArrayBuffer, WrappedArray}
 import scala.collection.Map
 import spark._
-import java.io._
-import scala.Serializable
 
 private[spark] class ParallelCollectionPartition[T: ClassManifest](
     var rddId: Long,
@@ -35,7 +35,8 @@ private[spark] class ParallelCollectionPartition[T: ClassManifest](
   override def hashCode(): Int = (41 * (41 + rddId) + slice).toInt
 
   override def equals(other: Any): Boolean = other match {
-    case that: ParallelCollectionPartition[_] => (this.rddId == that.rddId && this.slice == that.slice)
+    case that: ParallelCollectionPartition[_] =>
+      (this.rddId == that.rddId && this.slice == that.slice)
     case _ => false
   }
 
@@ -55,8 +56,23 @@ private[spark] class ParallelCollectionPartition[T: ClassManifest](
         out.writeLong(rddId)
         out.writeInt(slice)
 
+        // Write an extra byte to indicate whether the Seq is a WrappedArray. If it is a
+        // WrappedArray, convert it into an Array and serialize that instead.
+        // The reason we are doing this is that Chill/Kryo doesn't work very well with
+        // WrappedArray when the WrappedArray contains specialized tuples.
         val ser = sfactory.newInstance()
-        Utils.serializeViaNestedStream(out, ser)(_.writeObject(values))
+        values match {
+          case wrappedArray: WrappedArray[T] =>
+            out.writeByte(1)
+            Utils.serializeViaNestedStream(out, ser) { stream =>
+              stream.writeObject(wrappedArray.toArray)
+            }
+          case _ =>
+            out.writeByte(0)
+            Utils.serializeViaNestedStream(out, ser) { stream =>
+              stream.writeObject(values)
+            }
+        }
     }
   }
 
@@ -71,7 +87,16 @@ private[spark] class ParallelCollectionPartition[T: ClassManifest](
         slice = in.readInt()
 
         val ser = sfactory.newInstance()
-        Utils.deserializeViaNestedStream(in, ser)(ds => values = ds.readObject())
+        in.readByte() match {
+          case 1 =>
+            Utils.deserializeViaNestedStream(in, ser) { stream =>
+              values = stream.readObject().asInstanceOf[Array[T]].toSeq
+            }
+          case 0 =>
+            Utils.deserializeViaNestedStream(in, ser) { stream =>
+              values = stream.readObject()
+            }
+        }
     }
   }
 }
@@ -112,13 +137,8 @@ private object ParallelCollectionRDD {
     }
     seq match {
       case r: Range.Inclusive => {
-        val sign = if (r.step < 0) {
-          -1
-        } else {
-          1
-        }
-        slice(new Range(
-          r.start, r.end + sign, r.step).asInstanceOf[Seq[T]], numSlices)
+        val sign = if (r.step < 0) -1 else 1
+        slice(new Range(r.start, r.end + sign, r.step).asInstanceOf[Seq[T]], numSlices)
       }
       case r: Range => {
         (0 until numSlices).map(i => {
