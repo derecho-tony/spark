@@ -27,6 +27,12 @@ import serializer.{SerializerInstance, DeserializationStream, SerializationStrea
 import spark.broadcast._
 import spark.storage._
 
+import scala.collection.mutable.WrappedArray
+import com.twitter.chill.Input
+import com.twitter.chill.Output
+import com.twitter.chill.KSerializer
+
+
 private[spark]
 class KryoSerializationStream(kryo: Kryo, outStream: OutputStream) extends SerializationStream {
   val output = new KryoOutput(outStream)
@@ -131,6 +137,9 @@ class KryoSerializer extends spark.serializer.Serializer with Logging {
     kryo.register(classOf[SerializableWritable[_]], new KryoJavaSerializer())
     kryo.register(classOf[HttpBroadcast[_]], new KryoJavaSerializer())
 
+    // To work around Chill's inability to serialize specialized tuples in WrappedArray.
+    kryo.register(classOf[WrappedArray[_]], new KryoWrappedArraySerializer())
+
     // Allow the user to register their own classes by setting spark.kryo.registrator
     try {
       Option(System.getProperty("spark.kryo.registrator")).foreach { regCls =>
@@ -152,5 +161,23 @@ class KryoSerializer extends spark.serializer.Serializer with Logging {
 
   def newInstance(): SerializerInstance = {
     new KryoSerializerInstance(this)
+  }
+}
+
+/**
+ * A custom WrappedArray serializer to replace Chill's default serializer so we can serialize
+ * specialized tuples. This works by simply converting a WrappedArray into an Array.
+ */
+private class KryoWrappedArraySerializer[T:ClassManifest] extends KSerializer[WrappedArray[T]] {
+
+  def write(kser: Kryo, out: Output, obj: WrappedArray[T]) {
+    kser.writeObject(out, obj.toArray)
+  }
+
+  def read(kser: Kryo, in: Input, cls: Class[WrappedArray[T]]) = {
+    kser.readObject(in, classOf[WrappedArray[T]])
+      .asInstanceOf[Array[T]]
+      .toSeq
+      .asInstanceOf[WrappedArray[T]]
   }
 }
