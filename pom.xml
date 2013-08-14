@@ -73,7 +73,7 @@
     <mesos.version>0.9.0-incubating</mesos.version>
     <akka.version>2.0.3</akka.version>
     <slf4j.version>1.7.2</slf4j.version>
-    <cdh.version>4.1.2</cdh.version>
+    <cdh.version>4.3.0</cdh.version>
     <log4j.version>1.2.17</log4j.version>
 
     <PermGen>64m</PermGen>
